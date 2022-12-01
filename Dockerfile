@@ -11,10 +11,46 @@ RUN apt-get update && \
 
 # BESS pre-reqs
 WORKDIR /bess
-ARG BESS_COMMIT=dpdk-2011-focal
-RUN git clone https://github.com/omec-project/bess.git .
+#ARG BESS_COMMIT=dpdk-2011-focal
+#RUN git clone https://github.com/omec-project/bess.git .
+# Temporary: To test CNDP BESS with OMEC-UPF.
+ARG BESS_COMMIT=feat_cndp_bess_port
+RUN git clone https://github.com/manojgop/bess.git .
 RUN git checkout ${BESS_COMMIT}
 RUN cp -a protobuf /protobuf
+
+# Stage cndp-build: Install CNDP dependencies and build CNDP.
+FROM ghcr.io/omec-project/upf-epc/bess_build AS cndp-build
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    golang \
+    libelf-dev \
+    meson \
+    pkg-config \
+    libbsd-dev \
+    libbpf-dev \
+    libjson-c-dev \
+    libnl-3-dev \
+    libnl-cli-3-dev \
+    libnuma-dev \
+    libpcap-dev \
+    git
+
+# Get CNDP from GitHub
+RUN git clone https://github.com/CloudNativeDataPlane/cndp.git /cndp
+WORKDIR /cndp
+# Use version of CNDP tested with BESS
+RUN git checkout 740d37d0eafa5de85900662f3d653f3777171a5d
+# Build and install CNDP shared libraries
+RUN make && make install
+# Build and install CNDP static libraries
+RUN make static_build=1 rebuild install
+
+# Build the prometheus-metrics app
+WORKDIR /cndp/lang/go/stats/prometheus/
+RUN go build prometheus.go
 
 # Stage bess-build: builds bess with its dependencies
 FROM bess-deps AS bess-build
@@ -27,6 +63,31 @@ RUN apt-get update && \
 
 ARG MAKEFLAGS
 ENV PKG_CONFIG_PATH=/usr/lib64/pkgconfig
+
+# Install CNDP dependencies
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    ethtool \
+    libbsd-dev \
+    libbpf-dev \
+    libelf1 \
+    libjson-c-dev \
+    libnl-3-dev \
+    libnl-cli-3-dev \
+    libnuma1 \
+    libpcap0.8 \
+    pkg-config
+
+# Copy required CNDP libraries, header files, pkg-config and binaries.
+COPY --from=cndp-build /cndp/usr/local/bin/cndpfwd /usr/bin/
+COPY --from=cndp-build /cndp/usr/local/lib/x86_64-linux-gnu/*.so /usr/local/lib/x86_64-linux-gnu/
+COPY --from=cndp-build /cndp/usr/local/lib/x86_64-linux-gnu/*.a /usr/local/lib/x86_64-linux-gnu/
+COPY --from=cndp-build /cndp/usr/local/include/cndp /usr/local/include/cndp
+COPY --from=cndp-build /cndp/usr/local/lib/pkgconfig/libcndp.pc /usr/local/lib/x86_64-linux-gnu/pkgconfig/
+COPY --from=cndp-build /cndp/lang/go/stats/prometheus/prometheus /usr/bin/
+
+ENV PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/lib/x86_64-linux-gnu:/usr/local/lib/x86_64-linux-gnu/pkgconfig
 WORKDIR /bess
 
 # Patch and build DPDK
@@ -81,6 +142,32 @@ COPY --from=bess-build /bin/bessd /bin/bessd
 COPY --from=bess-build /bin/modules /bin/modules
 COPY conf /opt/bess/bessctl/conf
 RUN ln -s /opt/bess/bessctl/bessctl /bin
+
+# Install CNDP dependencies
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    ethtool \
+    libbsd0 \
+    libbpf0 \
+    libelf1 \
+    libgflags2.2 \
+    libjson-c[45] \
+    libnl-3-200 \
+    libnl-cli-3-200 \
+    libnuma1 \
+    libpcap0.8 \
+    pkg-config
+
+# Copy required CNDP libraries, header files, pkg-config and binaries.
+COPY --from=cndp-build /cndp/usr/local/bin/cndpfwd /usr/bin/
+COPY --from=cndp-build /cndp/usr/local/lib/x86_64-linux-gnu/*.so /usr/local/lib/x86_64-linux-gnu/
+COPY --from=cndp-build /cndp/usr/local/lib/x86_64-linux-gnu/*.a /usr/local/lib/x86_64-linux-gnu/
+COPY --from=cndp-build /cndp/usr/local/include/cndp /usr/local/include/cndp
+COPY --from=cndp-build /cndp/usr/local/lib/pkgconfig/libcndp.pc /usr/local/lib/x86_64-linux-gnu/pkgconfig/
+COPY --from=cndp-build /cndp/lang/go/stats/prometheus/prometheus /usr/bin/
+COPY --from=cndp-build /lib/x86_64-linux-gnu/libjson-c.so* /lib/x86_64-linux-gnu/
+
 ENV PYTHONPATH="/opt/bess"
 WORKDIR /opt/bess/bessctl
 ENTRYPOINT ["bessd", "-f"]
