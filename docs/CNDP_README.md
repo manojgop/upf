@@ -25,7 +25,7 @@ $ make docker-build
 
 Following diagram shows is a test setup. 
 
-![Test setup] (./images/cndp-omec-upf-test-setup.jpg)
+![Test setup](./images/cndp-omec-upf-test-setup.jpg)
 
 There are two systems: System 1 is runs CNDP BESS UPF and System 2 runs DPDK based packet generator which simulates traffic generated from multiple UEs and App servers. 
 
